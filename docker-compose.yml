@@ -1,0 +1,56 @@
+# Full local stack: docker compose up --build   then open http://localhost:8080 (key: lf_demo_key)
+x-app-env: &app-env
+  DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/ledgerflow?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
+  LOG_LEVEL: info
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledgerflow
+      POSTGRES_PASSWORD: ledgerflow
+      POSTGRES_DB: ledgerflow
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerflow"]
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  api:
+    build: .
+    environment:
+      <<: *app-env
+      ADMIN_TOKEN: change-me-admin
+      # Demo only: a client with a known API key, wired to the demo receiver.
+      BOOTSTRAP_API_KEY: lf_demo_key
+      BOOTSTRAP_WEBHOOK_URL: http://webhook-receiver:8081/webhooks
+      BOOTSTRAP_WEBHOOK_SECRET: whsec_demo_secret
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: .
+    entrypoint: ["/usr/local/bin/worker"]
+    environment: *app-env
+    depends_on: [api]
+    deploy:
+      replicas: 2   # several workers share the outbox thanks to SKIP LOCKED
+
+  webhook-receiver:
+    build: .
+    entrypoint: ["/usr/local/bin/webhook-receiver"]
+    environment:
+      WEBHOOK_SECRET: whsec_demo_secret
+      FAIL_RATE: "0.2"   # fails 20% of the time to show retries with backoff

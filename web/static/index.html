@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ledgerflow Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">◆</span> Ledgerflow</div>
+    <form id="key-form" class="key-form">
+      <input id="api-key" type="password" placeholder="API key (lf_...)" autocomplete="off" required>
+      <button type="submit">Connect</button>
+    </form>
+  </header>
+
+  <main id="app" class="hidden">
+    <section class="col">
+      <div class="card">
+        <h2>Accounts</h2>
+        <ul id="accounts" class="accounts"></ul>
+        <form id="new-account" class="row">
+          <input name="owner_name" placeholder="Owner name" required>
+          <select name="currency"><option>XOF</option><option>EUR</option><option>USD</option></select>
+          <button type="submit">Create</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Transfer</h2>
+        <form id="transfer" class="stack">
+          <label>From <select name="from" required></select></label>
+          <label>To <select name="to" required></select></label>
+          <label>Amount <input name="amount" type="number" min="1" step="1" required></label>
+          <label>Reference <input name="reference" placeholder="optional"></label>
+          <label class="check"><input name="double" type="checkbox"> Send the same request twice in parallel (idempotency demo)</label>
+          <button type="submit">Send money</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="card" id="detail">
+        <p class="muted">Select an account to see its statement.</p>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="card">
+        <h2>Events <span class="muted small">(outbox → webhooks)</span></h2>
+        <ul id="events" class="events"></ul>
+      </div>
+    </section>
+  </main>
+
+  <div id="intro" class="intro">
+    <h1>Double-entry wallet API</h1>
+    <p>Paste an API key to start. With <code>docker compose up</code> the demo key is <code>lf_demo_key</code>.</p>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

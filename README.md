@@ -9,6 +9,8 @@ production.
 > 📘 Un guide d'apprentissage détaillé (concepts, choix de conception, questions d'entretien, feuille de route pour
 > reconstruire le projet) se trouve dans [`docs/GUIDE_FR.md`](docs/GUIDE_FR.md).
 
+![Dashboard Ledgerflow : comptes, relevé, et flux d'événements avec le nombre de tentatives de livraison](docs/dashboard.png)
+
 ## Points forts
 
 | Problème | Solution dans Ledgerflow |
@@ -129,6 +131,10 @@ Mesures sur une petite machine cloud, avec l'API, le worker, Postgres et le gén
 **environ 980 virements/s, p50 26 ms, p99 125 ms**. Les 9 857 événements ont tous été livrés, et l'invariant a été
 vérifié après le test.
 
+**Arrêt propre sous charge** : un `SIGTERM` envoyé à l'API en plein test de charge l'arrête en moins de 100 ms, sans
+aucune réponse 5xx. Les 3 375 virements confirmés au client sont exactement ceux présents en base, et les invariants
+SQL restent vrais.
+
 ## Organisation du code
 
 ```
@@ -155,3 +161,7 @@ web/static            dashboard (JavaScript sans framework)
 - En production, les URLs de webhook devraient être protégées contre la SSRF (blocage des plages d'IP privées).
 - Remplacer le polling par `LISTEN/NOTIFY` (latence plus faible), ou par un broker comme Kafka si plusieurs
   consommateurs ont besoin des événements.
+
+## Licence
+
+[MIT](LICENSE)

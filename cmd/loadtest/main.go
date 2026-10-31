@@ -122,7 +122,10 @@ func main() {
 	var total int64
 	for _, a := range accts {
 		var got account
-		_, _ = call("GET", "/v1/accounts/"+a.ID, nil, "", &got)
+		if code, err := call("GET", "/v1/accounts/"+a.ID, nil, "", &got); err != nil || code != 200 {
+			fmt.Printf("cannot verify the invariant: API unreachable (code=%d err=%v)\n", code, err)
+			os.Exit(2)
+		}
 		total += got.Balance
 	}
 	want := *initial * int64(*nAccts)

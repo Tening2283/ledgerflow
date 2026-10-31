@@ -31,3 +31,28 @@ jobs:
           TEST_DATABASE_URL: postgres://ledgerflow:ledgerflow@localhost:5432/ledgerflow?sslmode=disable
           TEST_REDIS_URL: redis://localhost:6379/1
       - run: docker build -t ledgerflow .
+
+  compose-smoke-test:
+    # Starts the full docker-compose stack exactly like a user would and checks it works end to end.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q
+      - run: docker compose up -d --build
+      - name: Wait for the API to be ready
+        run: |
+          for i in $(seq 1 60); do
+            curl -fs localhost:8080/readyz && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Create an account and make a deposit with the demo key
+        run: |
+          ACC=$(curl -fs -H 'Authorization: Bearer lf_demo_key' -H 'Content-Type: application/json' \
+            localhost:8080/v1/accounts -d '{"owner_name":"CI","currency":"XOF"}' | jq -r .id)
+          curl -fs -H 'Authorization: Bearer lf_demo_key' -H 'Content-Type: application/json' \
+            -H 'Idempotency-Key: ci-1' localhost:8080/v1/deposits -d "{\"account_id\":\"$ACC\",\"amount\":1000}"
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v

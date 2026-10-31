@@ -54,3 +54,6 @@ services:
     environment:
       WEBHOOK_SECRET: whsec_demo_secret
       FAIL_RATE: "0.2"   # fails 20% of the time to show retries with backoff
+
+volumes:
+  pgdata:

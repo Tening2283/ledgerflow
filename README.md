@@ -1,70 +1,73 @@
 # Ledgerflow
 
-A **double-entry wallet & payments API** (think a mobile-money backend), written in Go on PostgreSQL and Redis.
-The focus is on what makes money-moving backends hard: correctness under concurrency, safe retries,
-reliable event delivery and operability.
+Une **API de portefeuille électronique et de paiements en partie double**, dans l'esprit d'un backend de Mobile Money
+(Wave, Orange Money), écrite en Go avec PostgreSQL et Redis.
+Le projet se concentre sur ce qui rend difficiles les backends qui manipulent de l'argent : rester juste sous forte
+concurrence, rendre les retries sans danger, livrer les événements de façon fiable, et pouvoir exploiter le service en
+production.
 
-> 🇫🇷 A detailed learning guide (concepts, design decisions, interview Q&A, rebuild roadmap) is in
-> [`docs/GUIDE_FR.md`](docs/GUIDE_FR.md).
+> 📘 Un guide d'apprentissage détaillé (concepts, choix de conception, questions d'entretien, feuille de route pour
+> reconstruire le projet) se trouve dans [`docs/GUIDE_FR.md`](docs/GUIDE_FR.md).
 
-## Highlights
+## Points forts
 
-| Problem | Solution in Ledgerflow |
+| Problème | Solution dans Ledgerflow |
 |---|---|
-| Money must never be created or lost | **Double-entry ledger**: every transfer = 2 immutable entries summing to 0; deposits come from an `external` account |
-| Concurrent transfers on the same accounts | Row locks (`SELECT … FOR UPDATE`) taken in a **global order** → no lost updates, no deadlocks. DB `CHECK` constraint as a second line of defense |
-| Client retries after a timeout | **Idempotency keys** stored in the *same transaction* as the transfer; concurrent duplicates block on the unique index then replay |
-| "Money moved but the event was lost" | **Transactional outbox**: event row committed atomically with the transfer |
-| Delivering events to merchants | Workers claim batches with **`FOR UPDATE SKIP LOCKED`** + lease; **HMAC-signed** webhooks, **exponential backoff with jitter**, dead letter |
-| Abusive clients across many API replicas | **Distributed token bucket** in Redis (atomic Lua script, Redis clock), fail-open |
-| Operating it | JSON logs with request IDs, Prometheus metrics, `/healthz` + `/readyz`, graceful shutdown, migrations guarded by an advisory lock |
+| L'argent ne doit jamais être créé ni perdu | **Registre en partie double** : chaque virement écrit 2 lignes immuables dont la somme fait 0. Les dépôts proviennent d'un compte `external` |
+| Virements simultanés sur les mêmes comptes | Verrous de ligne (`SELECT … FOR UPDATE`) pris dans un **ordre global** : aucune mise à jour perdue, aucun deadlock. Une contrainte `CHECK` en base sert de seconde barrière |
+| Le client réessaie après un timeout | **Clés d'idempotence** enregistrées *dans la même transaction* que le virement. Les doublons simultanés attendent sur l'index unique, puis rejouent le résultat |
+| « L'argent a bougé mais l'événement est perdu » | **Transactional outbox** : l'événement est commité de façon atomique avec le virement |
+| Notifier les marchands | Des workers réclament les événements par lots avec **`FOR UPDATE SKIP LOCKED`** et un bail. Webhooks **signés HMAC**, **backoff exponentiel avec jitter**, dead letter |
+| Clients abusifs répartis sur plusieurs instances de l'API | **Token bucket distribué** dans Redis (script Lua atomique, horloge de Redis), en mode fail-open |
+| Exploitation | Logs JSON avec request ID, métriques Prometheus, `/healthz` et `/readyz`, arrêt propre (graceful shutdown), migrations protégées par un advisory lock |
 
 ## Architecture
 
 ```
-            ┌──────────────┐  HTTPS + API key   ┌───────────────────────────┐
- merchant → │  Dashboard / │ ─────────────────→ │ api (N replicas)          │
-            │  any client  │                    │  auth → rate limit → handler
-            └──────────────┘                    └──────┬─────────────┬──────┘
-                                                       │ 1 transaction│ token bucket
-                                                       ▼             ▼
+            ┌──────────────┐  HTTPS + clé API   ┌────────────────────────────┐
+ marchand → │  Dashboard / │ ─────────────────→ │ api (N instances)          │
+            │  tout client │                    │  auth → rate limit → handler
+            └──────────────┘                    └──────┬──────────────┬──────┘
+                                                       │ 1 transaction │ token bucket
+                                                       ▼              ▼
                                    ┌──────────────────────────┐  ┌───────┐
                                    │ PostgreSQL               │  │ Redis │
                                    │ accounts, transfers,     │  └───────┘
                                    │ entries, idempotency_keys│
                                    │ outbox_events            │
                                    └────────────┬─────────────┘
-                                                │ SKIP LOCKED batches
+                                                │ lots SKIP LOCKED
                                                 ▼
-                                   ┌──────────────────────────┐   signed POST    ┌──────────────────┐
-                                   │ worker (N replicas)      │ ───────────────→ │ merchant webhook │
-                                   │ retries, backoff, DLQ    │   at-least-once  └──────────────────┘
+                                   ┌──────────────────────────┐   POST signé     ┌──────────────────┐
+                                   │ worker (N instances)     │ ───────────────→ │ webhook marchand │
+                                   │ retries, backoff, DLQ    │  at-least-once   └──────────────────┘
                                    └──────────────────────────┘
 ```
 
-A transfer is **one** PostgreSQL transaction:
+Un virement correspond à **une seule** transaction PostgreSQL :
 
 ```
 BEGIN
-  INSERT idempotency_keys (client, key, hash) ON CONFLICT DO NOTHING   -- replay if it already exists
-  SELECT … FROM accounts WHERE id IN (a, b) ORDER BY id FOR UPDATE     -- lock in a global order
-  check currency + balance
-  INSERT transfers;  INSERT entries (-amount, +amount);  UPDATE balances
+  INSERT idempotency_keys (client, key, hash) ON CONFLICT DO NOTHING   -- si la clé existe déjà : on rejoue
+  SELECT … FROM accounts WHERE id IN (a, b) ORDER BY id FOR UPDATE     -- verrouillage dans un ordre global
+  vérification de la devise et du solde
+  INSERT transfers;  INSERT entries (-montant, +montant);  UPDATE des soldes
   INSERT outbox_events ('transfer.created')
   UPDATE idempotency_keys SET transfer_id = …
 COMMIT
 ```
 
-## Quick start
+## Démarrage rapide
 
 ```bash
 docker compose up --build
 ```
 
-Open http://localhost:8080 and use the API key `lf_demo_key`. The stack runs Postgres, Redis, the API, **2 workers**
-and a demo webhook receiver that fails 20% of the time, so you can watch retries happen.
+Ouvrez http://localhost:8080 et utilisez la clé API `lf_demo_key`. La stack lance Postgres, Redis, l'API, **2 workers**
+et un receveur de webhooks de démonstration qui échoue 20 % du temps, pour qu'on voie les nouvelles tentatives se
+produire.
 
-Without Docker (Go 1.24, a local Postgres and Redis):
+Sans Docker (Go 1.24, avec un Postgres et un Redis en local) :
 
 ```bash
 export DATABASE_URL=postgres://postgres@localhost:5432/ledgerflow?sslmode=disable ADMIN_TOKEN=admin BOOTSTRAP_API_KEY=lf_demo_key
@@ -73,75 +76,82 @@ go run ./cmd/api & go run ./cmd/worker
 
 ## API
 
-All `/v1` routes require `Authorization: Bearer <api_key>`. Amounts are integers in minor units.
+Toutes les routes `/v1` exigent `Authorization: Bearer <clé_api>`. Les montants sont des entiers, exprimés en unités
+mineures.
 
-| Method & path | Description |
+| Méthode et chemin | Description |
 |---|---|
-| `POST /admin/clients` | (admin token) create a client → `api_key` (shown once) + `webhook_secret` |
-| `PUT /v1/webhook` | set the webhook URL |
-| `POST /v1/accounts` · `GET /v1/accounts?cursor=&limit=` · `GET /v1/accounts/{id}` | accounts (cursor pagination) |
-| `GET /v1/accounts/{id}/entries?cursor=` | account statement |
-| `POST /v1/deposits` · `POST /v1/withdrawals` · `POST /v1/transfers` | money movements, **`Idempotency-Key` header required** |
-| `GET /v1/transfers/{id}` | a transfer |
-| `GET /v1/events?cursor=` | event feed (polling alternative to webhooks) |
-| `GET /healthz` · `GET /readyz` · `GET /metrics` | ops |
+| `POST /admin/clients` | (token admin) crée un client → `api_key` (affichée une seule fois) et `webhook_secret` |
+| `PUT /v1/webhook` | définit l'URL du webhook |
+| `POST /v1/accounts` · `GET /v1/accounts?cursor=&limit=` · `GET /v1/accounts/{id}` | comptes (pagination par curseur) |
+| `GET /v1/accounts/{id}/entries?cursor=` | relevé de compte |
+| `POST /v1/deposits` · `POST /v1/withdrawals` · `POST /v1/transfers` | mouvements d'argent, **en-tête `Idempotency-Key` obligatoire** |
+| `GET /v1/transfers/{id}` | un virement |
+| `GET /v1/events?cursor=` | flux d'événements (alternative aux webhooks, par polling) |
+| `GET /healthz` · `GET /readyz` · `GET /metrics` | exploitation |
 
 ```bash
 curl -X POST localhost:8080/v1/transfers \
   -H 'Authorization: Bearer lf_demo_key' -H 'Idempotency-Key: 7f1c…' -H 'Content-Type: application/json' \
-  -d '{"from_account_id":"…","to_account_id":"…","amount":15000,"reference":"rent"}'
+  -d '{"from_account_id":"…","to_account_id":"…","amount":15000,"reference":"loyer"}'
 ```
 
-Errors use the format `{"error":{"code":"insufficient_funds","message":"…","request_id":"…"}}`.
-A replayed request returns the original transfer with the header `Idempotent-Replayed: true`.
+Les erreurs ont ce format : `{"error":{"code":"insufficient_funds","message":"…","request_id":"…"}}`.
+Une requête rejouée renvoie le virement d'origine avec l'en-tête `Idempotent-Replayed: true`.
 
-Webhooks carry `Ledgerflow-Event-Id`, `Ledgerflow-Event-Type` and `Ledgerflow-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`.
-Delivery is at-least-once, so receivers must deduplicate by event id (see `cmd/webhook-receiver`).
+Les webhooks portent les en-têtes `Ledgerflow-Event-Id`, `Ledgerflow-Event-Type` et
+`Ledgerflow-Signature: t=<unix>,v1=<HMAC-SHA256 en hexadécimal de "t.body">`.
+La livraison est *at-least-once* : un même événement peut arriver plusieurs fois, donc les receveurs doivent
+dédoublonner grâce à l'identifiant de l'événement (voir `cmd/webhook-receiver`).
 
 ## Tests
 
 ```bash
-make test   # needs Postgres + Redis (or run: docker compose up postgres redis)
+make test   # nécessite Postgres et Redis (ou lancez : docker compose up postgres redis)
 ```
 
-The integration tests run against a real PostgreSQL. Each test gets its own schema, so tests run in parallel. They include:
-- 640 random concurrent transfers in both directions, checking that the sum of balances is still 0, no balance is
-  negative, `balance == SUM(entries)` and there are no deadlocks;
-- 20 concurrent requests with the same idempotency key, checking that exactly 1 transfer is created and 19 are replayed;
-- 4 concurrent workers delivering 30 events, checking that each event is delivered exactly once in that round;
-- a token bucket hammered by 100 goroutines, checking that exactly `burst` requests are allowed.
+Les tests d'intégration tournent sur un vrai PostgreSQL. Chaque test a son propre schéma, ce qui permet de les lancer
+en parallèle. Ils comprennent notamment :
+- 640 virements aléatoires simultanés, dans les deux sens. Le test vérifie que la somme des soldes reste à 0, qu'aucun
+  solde n'est négatif, que `balance == SUM(entries)` et qu'il n'y a aucun deadlock ;
+- 20 requêtes simultanées avec la même clé d'idempotence : exactement 1 virement créé et 19 rejoués ;
+- 4 workers simultanés qui livrent 30 événements : chaque événement est livré exactement une fois dans ce tour ;
+- un token bucket sollicité par 100 goroutines : exactement `burst` requêtes sont acceptées.
 
-## Load test
+## Test de charge
 
 ```bash
 make loadtest
 ```
 
-On a small cloud sandbox (API, worker, Postgres and the load generator all on the same machine, 32 concurrent clients
-and 20 accounts, so lock contention is high), I measured about **980 transfers/s, p50 26 ms, p99 125 ms**.
-All 9,857 events were delivered and the invariant was verified after the run.
+Mesures sur une petite machine cloud, avec l'API, le worker, Postgres et le générateur de charge sur la même machine,
+32 clients simultanés et 20 comptes (donc une forte contention sur les verrous) :
+**environ 980 virements/s, p50 26 ms, p99 125 ms**. Les 9 857 événements ont tous été livrés, et l'invariant a été
+vérifié après le test.
 
-## Project layout
+## Organisation du code
 
 ```
-cmd/api               HTTP server + dashboard
-cmd/worker            outbox dispatcher + janitor
-cmd/webhook-receiver  demo merchant endpoint (signature check, dedup)
-cmd/loadtest          load generator + invariant check
-internal/ledger       domain: accounts, transfers, idempotency (the core)
-internal/httpapi      routing, middleware, handlers, error mapping
-internal/webhook      signing, dispatcher, backoff
-internal/ratelimit    Redis token bucket
-internal/db           pool + embedded migrations
-web/static            dashboard (vanilla JS)
+cmd/api               serveur HTTP et dashboard
+cmd/worker            dispatcher de l'outbox et janitor (nettoyage périodique)
+cmd/webhook-receiver  endpoint marchand de démo (vérification de signature, dédoublonnage)
+cmd/loadtest          générateur de charge et vérification de l'invariant
+internal/ledger       domaine : comptes, virements, idempotence (le cœur du projet)
+internal/httpapi      routage, middlewares, handlers, conversion des erreurs en codes HTTP
+internal/webhook      signature, dispatcher, backoff
+internal/ratelimit    token bucket Redis
+internal/db           pool de connexions et migrations embarquées
+web/static            dashboard (JavaScript sans framework)
 ```
 
-## Known limitations / next steps
+## Limites connues et pistes d'amélioration
 
-- Webhook order is not guaranteed (parallel workers + retries). Consumers should rely on `created_at` or fetch the current state.
-- A single PostgreSQL primary is both the source of truth and the write bottleneck. Next steps would be read replicas
-  for statements, and sharding by client.
-- "Hot" accounts (one merchant receiving everything) serialize on one row lock. This could be mitigated with
-  sub-accounts or batched settlement.
-- Webhook URLs should be checked against SSRF (block private IP ranges) in production.
-- Swap polling for `LISTEN/NOTIFY` (lower latency) or a broker (Kafka) when several consumers need the events.
+- L'ordre des webhooks n'est pas garanti (workers en parallèle et retries). Les consommateurs doivent s'appuyer sur
+  `created_at` ou relire l'état actuel.
+- Un seul PostgreSQL primaire est à la fois la source de vérité et le goulot d'étranglement en écriture. Les étapes
+  suivantes seraient des réplicas en lecture pour les relevés, puis un sharding par client.
+- Les comptes très sollicités (un marchand qui reçoit tout) sont sérialisés sur un seul verrou de ligne. On pourrait
+  atténuer ce problème avec des sous-comptes ou des règlements par lots.
+- En production, les URLs de webhook devraient être protégées contre la SSRF (blocage des plages d'IP privées).
+- Remplacer le polling par `LISTEN/NOTIFY` (latence plus faible), ou par un broker comme Kafka si plusieurs
+  consommateurs ont besoin des événements.

@@ -6,8 +6,7 @@ Le projet se concentre sur ce qui rend difficiles les backends qui manipulent de
 concurrence, rendre les retries sans danger, livrer les événements de façon fiable, et pouvoir exploiter le service en
 production.
 
-> 📘 Un guide d'apprentissage détaillé (concepts, choix de conception, questions d'entretien, feuille de route pour
-> reconstruire le projet) se trouve dans [`docs/GUIDE_FR.md`](docs/GUIDE_FR.md).
+
 
 ![Dashboard Ledgerflow : comptes, relevé, et flux d'événements avec le nombre de tentatives de livraison](docs/dashboard.png)
 
